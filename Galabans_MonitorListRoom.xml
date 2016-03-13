@@ -57,6 +57,7 @@ is removed, the list will become incorrect.
    group="worldlistgrab"
    match="Please input one of these numbers into your datapad to read the signal."
    script="endWorldList"
+   omit_from_output="y" omit_from_log="y" 
    send_to="12"
    sequence="100"
   >
@@ -288,6 +289,8 @@ function display_full_list()
             end
         end
     end
+
+    AnsiNote(d_white.."Please input one of these numbers into your datapad to read the signal.")
 
 end
 
