@@ -1,0 +1,399 @@
+<?xml version="1.0" encoding="iso-8859-1"?>
+<!DOCTYPE muclient>
+<!-- Saved on Thursday, March 10, 2016, 8:00 PM -->
+<!-- MuClient version 4.94 -->
+
+<muclient>
+<plugin
+   name="Galabans_MonitorListRoom"
+   author="Galaban"
+   id="cd2da9d1ff8cbd0449da272b"
+   language="Lua"
+   purpose="A simple plugin to keep track of which camera goes to which room"
+   save_state="y"
+   date_written="2016-03-10 19:57:25"
+   requires="4.60"
+   version="1.0"
+   >
+<description trim="y">
+<![CDATA[
+This is a simple plugin that will pay attention to the cameras as you monitor them 
+and then display which room they were last pointing to.  
+
+As with everything dynamic, things can get out of sync.  For example, if a camera 
+is removed, the list will become incorrect.
+]]>
+</description>
+
+</plugin>
+
+
+<!--  Triggers  -->
+
+<triggers>
+
+  <trigger
+   enabled="y"
+   match="You begin scanning the planet for cameras."
+   script="beginWorldList"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+  <trigger
+   enabled="n"
+   group="worldlistgrab"
+   match="Camera signal read... signal number *"
+   script="worldListCamera"
+   omit_from_output="y" omit_from_log="y" 
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+  <trigger
+   enabled="n"
+   group="worldlistgrab"
+   match="Please input one of these numbers into your datapad to read the signal."
+   script="endWorldList"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+  <trigger
+   enabled="y"
+   match="You can't seem to find signal number *."
+   script="lostCamera"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+
+  <trigger
+   enabled="y"
+   match="You begin to monitor your datapad closely..."
+   script="beginMonitor"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+  <trigger
+   enabled="n"
+   group="monitorCamGroup"
+   match="Your datapad shows an image..."
+   script="monitoringRoom"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+  <trigger
+   enabled="n"
+   group="monitorCamGroup"
+   match="Tuning to camera *"
+   script="grabCameraNumber"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+  <trigger
+   enabled="n"
+   group="monitorCamRoom"
+   match="*"
+   script="grabRoomName"
+   send_to="12"
+   sequence="100"
+  >
+  </trigger>
+
+
+<!--
+You begin scanning the planet for cameras.
+Camera signal read... signal number 1
+Camera signal read... signal number 2
+Camera signal read... signal number 3
+Please input one of these numbers into your datapad to read the signal.
+
+
+You begin to monitor your datapad closely...
+Tuning to camera 1
+Your datapad shows an image...
+Capitol City Landing Pad [Security]
+This large area is the central landing pad of Lorrd's Capitol City. Countless
+
+
+monitor 2
+You lower your datapad.
+You begin to monitor your datapad closely...
+Tuning to camera 2
+Your datapad shows an image...
+<> Lorrd City University Study Hall <> [Library]
+A neutral tan-colored carpeting is layered out upon the floor here as if to
+make it more cozy to those settled in for the long bouts of studying associated
+with learning. Several dark synthwood tables are set up
+-->
+
+
+</triggers>
+
+
+<!--  Script  -->
+
+
+<script>
+<![CDATA[
+
+--------------------------------------------------------------------------------
+--  GLOBALS
+--
+b_black = ANSI(1)..ANSI(30)
+d_black = ANSI(22)..ANSI(30)
+b_red = ANSI(1)..ANSI(31)
+d_red = ANSI(22)..ANSI(31)
+b_green = ANSI(1)..ANSI(32)
+d_green = ANSI(22)..ANSI(32)
+b_yellow = ANSI(1)..ANSI(33)
+d_yellow = ANSI(22)..ANSI(33)
+b_blue = ANSI(1)..ANSI(34)
+d_blue = ANSI(22)..ANSI(34)
+b_magenta = ANSI(1)..ANSI(35)
+d_magenta = ANSI(22)..ANSI(35)
+b_cyan = ANSI(1)..ANSI(36)
+d_cyan = ANSI(22)..ANSI(36)
+b_white = ANSI(1)..ANSI(37)
+d_white = ANSI(22)..ANSI(37)
+
+cameraList = {}
+cameraCount = {}
+
+--------------------------------------------------------------------------------
+--  Required files and includes
+--
+function loadluafile(filename)
+
+    f, err = loadfile (GetPluginInfo(GetPluginID(), 20) .. filename)
+    if (f == nil) then
+        -- This is the error we get when we fail the plugin check.  So, copying that error here
+        ColourNote("black","red","--------------------------------------------------------------------------------")
+        ColourNote("black","red","Unable to load file '"..filename.."'.  Please download and install it.")
+        ColourNote("black","red","It is required for the correct operation of the "..GetPluginName().." plugin.")
+        ColourNote("black","red","File error:")
+        ColourNote("black","red",err)
+        ColourNote("black","red","--------------------------------------------------------------------------------")
+        EnablePlugin("63e6909083318cf63707c044", false)
+        ColourNote("red","black","Plugin disabled.")
+    else
+        f()
+    end
+end
+
+loadluafile ("lotj_colors.lua")
+loadluafile ("LotJMSDPPlanet.lua")
+require "checkplugin"
+
+--------------------------------------------------------------------------------
+--  World list grabbers  (from "monitor" command)
+--
+function OnPluginListChanged()
+    do_plugin_check_now("b3aae34498d5bf19b5b2e2af", "LotJMSDPHandler")
+end
+
+local currentCameraCount = 0
+function beginWorldList()
+    EnableTriggerGroup("worldlistgrab",true)
+    local planet = getmsdpplanet()
+
+    if (planet ~= "Unknown") then
+        currentCameraCount = 0
+    end
+end
+
+function endWorldList()
+    EnableTriggerGroup("worldlistgrab",false)
+    display_full_list()
+end
+
+-- The only information coming from the "monitor" command is a number
+-- So, just start counting the number of cameras and drop the output.
+function worldListCamera(rName, rLine, rWildcards, rStyles)
+    local planet = getmsdpplanet()
+
+    --Whoops, new planet.  Ignore until we can learn what it is.
+    if (planet == "Unknown") then
+        AnsiNote(stylesToANSI(rStyles))
+        return
+    end
+
+    if (cameraList[planet] == nil) then
+        cameraList[planet] = {}
+    end
+
+    currentCameraCount = currentCameraCount + 1
+
+end
+
+--------------------------------------------------------------------------------
+--  World list grabbers  (from "monitor" command)
+--
+function display_full_list()
+    local planet = getmsdpplanet()
+
+    if (planet == "Unknown") then   --sanity
+        return
+    end
+    -- last pass no cameras?  ignore
+    if (currentCameraCount == 0) then
+        return
+    end
+    -- have not monitored any yet, clear it out.
+    if (cameraList[planet] == nil) then
+        cameraList[planet] = {}
+    end
+
+    local ind = 1
+
+    if (cameraCount[planet] == nil) then cameraCount[planet] = 0 end
+
+    -- Was our last count the same as previous counts?
+    local countchanged = (currentCameraCount ~= cameraCount[planet])
+
+    if (countchanged and cameraCount[planet] > 0) then
+        AnsiNote(b_red.."The number of cameras changed. Rooms uncertain.")
+    end
+
+    for i = 1, currentCameraCount do
+        ind = i
+        local camroom = cameraList[planet][ind]
+        if (camroom == nil) then camroom = "" end
+
+        if (countchanged == false or camroom == "") then
+            AnsiNote(d_white.."Camera signal read... Signal number "..b_cyan..ind .. "  " .. camroom)
+        else
+            AnsiNote(d_white.."Camera signal read... Signal number "..b_cyan..ind .. b_white.."  was: " .. camroom)
+        end
+    end
+
+    ind = ind + 1
+    local lastindex = maxIndex(cameraList[planet])
+
+    if (ind <= lastindex) then
+        for i = ind, lastindex do
+            local camroom = cameraList[planet][i]
+            if (camroom ~= nil and camroom ~= "") then
+                AnsiNote(b_red .. "Previous signal lost. "..d_white.."Signal number "..b_cyan..i .. b_white.."  was: " .. camroom)
+            end
+        end
+    end
+
+end
+
+
+function maxIndex(list)
+    local maxInd = 0
+    if (list == nil) then return 0 end
+    for i, v in pairs(list) do
+        if(i > maxInd) then maxInd = i end
+    end
+    return maxInd
+end
+
+--------------------------------------------------------------------------------
+--  Camera Monitor grabbers (from "monitor X" commands)
+--
+local lastCamIndex = -1
+function beginMonitor()
+    lastCamIndex = -1
+
+    -- If we don't know the planet, send a warning and ignore all other processing
+    local planet = getmsdpplanet()
+    if (planet == "Unknown") then
+        ColourNote("orange","","Unknown planet for room.  LotJMSDPPlanets.lua needs updated.")
+        return
+    end
+
+    EnableTriggerGroup("monitorCamGroup",true)
+end
+
+
+function monitoringRoom()
+    -- These triggers are now useless
+    EnableTriggerGroup("monitorCamGroup",false)
+    -- Prep the trigger to grab the next line
+    EnableTriggerGroup("monitorCamRoom",true)
+end
+
+function grabCameraNumber(rName, rLine, rWildcards, rStyles)
+    lastCamIndex = tonumber(rWildcards[1])
+end
+
+function grabRoomName(rName, rLine, rWildcards, rStyles)
+    local planet = getmsdpplanet()
+    --sanity (should never hit this condition)
+    if (planet == "Unknown") then
+        return
+    end
+    if (cameraList[planet] == nil) then
+        cameraList[planet] = {}
+    end
+
+    EnableTriggerGroup("monitorCamRoom",false)
+
+    cameraList[planet][lastCamIndex] = stylesToANSI(rStyles)
+
+    -- We presume that once we begin monitoring the individual cameras, 
+    -- that all the cameras are updated. Perhaps a bit naive, but it's
+    -- the best we can do.
+    if (currentCameraCount > 0) then
+        cameraCount[planet] = currentCameraCount
+    end
+
+end
+
+function lostCamera(rName, rLine, rWildcards, rStyles)
+    local indx = tonumber(rWildcards[1])
+
+    local planet = getmsdpplanet()
+    --sanity (should never hit this condition)
+    if (planet == "Unknown") then
+        return
+    end
+    if (cameraList[planet] == nil) then
+        return
+    end
+
+    if (cameraList[planet][indx] ~= nil) then
+        cameraList[planet][indx] = nil
+    end
+
+end
+
+
+
+]]>
+</script>
+
+
+<!--  Plugin help  -->
+
+<aliases>
+  <alias
+   script="OnHelp"
+   match="Galabans_MonitorListRoom:help"
+   enabled="y"
+  >
+  </alias>
+</aliases>
+
+<script>
+<![CDATA[
+function OnHelp ()
+  world.Note (world.GetPluginInfo (world.GetPluginID (), 3))
+end
+]]>
+</script> 
+
+</muclient>
